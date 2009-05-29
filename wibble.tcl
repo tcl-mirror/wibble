@@ -279,6 +279,7 @@ proc getrequest {chan peerhost peerport} {
     return $request
 }
 
+# Get a response from the zone handlers.
 proc getresponse {request} {
     set requests [list $request]
 
