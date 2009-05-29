@@ -12,7 +12,7 @@ dict lappend zones / [list dirslash root $root]
 dict lappend zones / [list indexfile root $root indexfile index.html]
 dict lappend zones / [list static root $root]
 dict lappend zones / [list template root $root]
-dict lappend zones / [list directory root $root]
+dict lappend zones / [list dirlist root $root]
 dict lappend zones / [list notfound]
 
 # Static code text.
@@ -70,7 +70,7 @@ proc indexfile {args} {
 }
 
 # Generate directory listings.
-proc directory {args} {
+proc dirlist {args} {
     dict with args {
         if {![file isdirectory $fspath]} {
             # Pass if the requested object is not a directory or doesn't exist.
