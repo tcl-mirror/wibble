@@ -371,7 +371,7 @@ proc process {socket peerhost peerport} {
                     chan configure $file -encoding binary
                 }
             } elseif {[dict exists $response content]} {
-                dict set response content [encoding convertto identity\
+                dict set response content [encoding convertto iso8859-1\
                         [dict get $response content]]
                 set size [string length [dict get $response content]]
             } else {
@@ -430,7 +430,7 @@ proc process {socket peerhost peerport} {
         }
         chan puts -nonewline stderr $message
         try {
-            set message [encoding convertto identity $message]
+            set message [encoding convertto iso8859-1 $message]
             chan configure $socket -translation crlf
             chan puts $socket "HTTP/1.1 500 Internal Server Error"
             chan puts $socket "Content-Type: text/plain; charset=utf-8"
