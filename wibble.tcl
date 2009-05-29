@@ -4,6 +4,7 @@ exec tclsh "$0" ${1+"$@"}
 
 package require Tcl 8.6
 
+# Guess the root directory.
 set root [file normalize [file dirname [info script]]]
 
 # Define zone handlers.
@@ -14,12 +15,6 @@ dict lappend zones / [list static root $root]
 dict lappend zones / [list template root $root]
 dict lappend zones / [list dirlist root $root]
 dict lappend zones / [list notfound]
-
-# Static code text.
-set statuscodes {
-    200 "OK" 301 "Moved Permanently" 302 "Found" 403 "Forbidden" 404 "Not Found"
-    500 "Internal Server Error" 501 "Not Implemented"
-}
 
 # Echo request dictionary.
 proc vars {args} {
@@ -298,14 +293,14 @@ proc getresponse {request} {
                 set path [dict get $request path]
                 set length [string length $prefix]
                 if {[string index $prefix end] eq "/"} {
-                    set match $prefix
+                    set matchprefix $prefix
                     set matchlength $length
                 } else {
-                    set match $prefix/
+                    set matchprefix $prefix/
                     set matchlength [expr {$length + 1}]
                 }
                 if {$path ne $prefix
-                 && ![string equal -length $matchlength $match $path]} {
+                 && ![string equal -length $matchlength $matchprefix $path]} {
                     continue
                 }
 
@@ -321,39 +316,28 @@ proc getresponse {request} {
 
                 # Invoke the handler.
                 set arguments [dict merge $request $options $extras]
-                lassign [{*}$command {*}$arguments] operation data
+                lassign [{*}$command {*}$arguments] operation operand
 
                 # Process the handler's result operation.
                 switch -- $operation {
                 prependrequest {
                     # Put a new higher-priority request in the list.
-                    set data [dict merge $request $data]
-                    set requests [linsert $requests $i $data]
+                    set operand [dict merge $request $operand]
+                    set requests [linsert $requests $i $operand]
                     incr i
                     break
                 } replacerequest {
                     # Replace the request.
-                    set data [dict merge $request $data]
-                    set requests [lreplace $requests $i $i $data]
+                    set operand [dict merge $request $operand]
+                    set requests [lreplace $requests $i $i $operand]
                     break
                 } deleterequest {
                     # Delete the request.
                     set requests [lreplace $requests $i $i]
                     break
                 } sendresponse {
-                    # Add a Content-Length header to the response and return it.
-                    if {![dict exists $data header Content-Length]} {
-                        if {[dict exists $data content]} {
-                            set length [string bytelength\
-                                    [dict get $data content]]
-                        } elseif {[dict exists $data contentfile]} {
-                            set length [file size [dict get $data contentfile]]
-                        } else {
-                            set length 0
-                        }
-                        dict set data header Content-Length $length
-                    }
-                    return $data
+                    # A response has been obtained.  Return it.
+                    return $operand
                 } pass {
                     # Fall through to try next request.
                 } default {
@@ -375,33 +359,67 @@ proc process {socket peerhost peerport} {
         chan configure $socket -blocking 0
         while {1} {
             # Get request from client, then formulate a response to the reqeust.
-            set response [getresponse [getrequest $socket $peerhost $peerport]]
+            set request [getrequest $socket $peerhost $peerport]
+            set response [getresponse $request]
 
-            # Look up the textual status code.
-            if {[dict exists $::statuscodes [dict get $response status]]} {
-                set code [dict get $::statuscodes [dict get $response status]]
+            # Get the content size.
+            if {[dict exists $response contentfile]} {
+                set size [file size [dict get $response contentfile]]
+                if {[dict get $request method] ne "HEAD"} {
+                    # Open the channel now, to catch errors early.
+                    set file [open [dict get $response contentfile]]
+                    chan configure $file -encoding binary
+                }
+            } elseif {[dict exists $response content]} {
+                dict set response content [encoding convertto identity\
+                        [dict get $response content]]
+                set size [string length [dict get $response content]]
             } else {
-                set code Unknown
+                set size 0
             }
 
+            # Parse the Range request header if present.
+            set begin 0
+            set end [expr {$size - 1}]
+            if {[dict exists $request header Range]
+             && [regexp {^bytes=(\d*)-(\d*)$} [dict get $request header Range]\
+                        _ begin end]} {
+                if {$begin eq "" || $begin >= $size} {
+                    set begin 0
+                }
+                if {$end eq "" || $end >= $size || $end < $begin} {
+                    set end [expr {$size - 1}]
+                }
+            }
+
+            # Add Content-Length and Content-Range response headers.
+            set length [expr {$end - $begin + 1}]
+            dict set response header Content-Length $length
+            dict set response header Content-Range "bytes $begin-$end/$size"
+
             # Send the response header to the client.
-            chan puts $socket "HTTP/1.1 [dict get $response status] $code"
+            chan puts $socket "HTTP/1.1 [dict get $response status]"
             dict for {key val} [dict get $response header] {
                 chan puts $socket "$key: $val"
             }
             chan puts $socket ""
 
-            # Send the response content to the client.
-            chan configure $socket -translation binary
-            if {[dict exists $response content]} {
-                # Send buffered response.
-                chan puts -nonewline $socket [dict get $response content]
-            } elseif {[dict exists $response contentfile]} {
-                # Send response from a file.
-                set file [open [dict get $response contentfile]]
-                chan copy $file $socket
-                chan close $file
+            # If requested, send the response content to the client.
+            if {[dict get $request method] ne "HEAD"} {
+                chan configure $socket -translation binary
+                if {[dict exists $response contentfile]} {
+                    # Send response content from a file.
+                    chan seek $file $begin
+                    chan copy $file $socket -size $length
+                    chan close $file
+                } elseif {[dict exists $response content]} {
+                    # Send buffered response content.
+                    chan puts -nonewline $socket [string range\
+                            [dict get $response content] $begin $end]
+                }
             }
+
+            # Flush the outgoing buffer.
             chan flush $socket
         }
     } on error {"" options} {
@@ -412,9 +430,11 @@ proc process {socket peerhost peerport} {
         }
         chan puts -nonewline stderr $message
         try {
+            set message [encoding convertto identity $message]
             chan configure $socket -translation crlf
             chan puts $socket "HTTP/1.1 500 Internal Server Error"
             chan puts $socket "Content-Type: text/plain; charset=utf-8"
+            chan puts $socket "Content-Length: [string length $message]"
             chan puts $socket ""
             chan configure $socket -translation binary
             chan puts -nonewline $socket $message
