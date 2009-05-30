@@ -3,21 +3,16 @@
 exec tclsh "$0" ${1+"$@"}
 
 package require Tcl 8.6
+package provide wibble 0.1
 
-# Guess the root directory.
-set root [file normalize [file dirname [info script]]]
-
-# Define zone handlers.
-dict lappend zones /vars [list vars]
-dict lappend zones / [list dirslash root $root]
-dict lappend zones / [list indexfile root $root indexfile index.html]
-dict lappend zones / [list static root $root]
-dict lappend zones / [list template root $root]
-dict lappend zones / [list dirlist root $root]
-dict lappend zones / [list notfound]
+# Define the wibble namespace.
+namespace eval wibble {
+    namespace export filejoin unhex operation handle listen
+    variable zones {}
+}
 
 # Echo request dictionary.
-proc vars {request} {
+proc wibble::vars {request} {
     dict set response status 200
     dict set response header content-type "text/html; charset=utf-8"
     dict set response content {<html><body><table border="1">}
@@ -36,7 +31,7 @@ proc vars {request} {
 }
 
 # Redirect when a directory is requested without a trailing slash.
-proc dirslash {request} {
+proc wibble::dirslash {request} {
     dict with request {
         if {[file isdirectory $fspath]
          && [string index $suffix end] ni {/ ""}} {
@@ -50,7 +45,7 @@ proc dirslash {request} {
 }
 
 # Rewrite directory requests to search for an indexfile.
-proc indexfile {request} {
+proc wibble::indexfile {request} {
     dict with request {
         if {[file isdirectory $fspath]} {
             if {[string index $path end] ne "/"} {
@@ -65,7 +60,7 @@ proc indexfile {request} {
 }
 
 # Generate directory listings.
-proc dirlist {request} {
+proc wibble::dirlist {request} {
     dict with request {
         if {![file isdirectory $fspath]} {
             # Pass if the requested object is not a directory or doesn't exist.
@@ -93,7 +88,7 @@ proc dirlist {request} {
 }
 
 # Process templates.
-proc template {request} {
+proc wibble::template {request} {
     dict with request {
         if {[file readable $fspath.tmpl]} {
             dict set response status 200
@@ -110,7 +105,7 @@ proc template {request} {
 }
 
 # Send static files.
-proc static {request} {
+proc wibble::static {request} {
     dict with request {
         if {![file isdirectory $fspath] && [file exists $fspath]} {
             dict set response status 200
@@ -123,24 +118,15 @@ proc static {request} {
 }
 
 # Send a 404.
-proc notfound {request} {
+proc wibble::notfound {request} {
     operation sendresponse [dict create status 404\
         content "can't find [dict get $request uri]"\
         header [dict create content-type "text/plain; charset=utf-8"\
                connection keep-alive]]
 }
 
-# Version of [file join] that doesn't do ~user substitution and ignores leading
-# slashes, for all elements except the first.
-proc filejoin {args} {
-    for {set i 1} {$i < [llength $args]} {incr i} {
-        lset args $i ./[lindex $args $i]
-    }
-    string map {./ ""} [file join {*}$args]
-}
-
 # Apply a template.
-proc applytemplate {command template} {
+proc wibble::applytemplate {command template} {
     set script ""
     set pos 0
     foreach pair [regexp -line -all -inline -indices {^%.*$} $template] {
@@ -160,7 +146,7 @@ proc applytemplate {command template} {
 }
 
 # Get a line or a block of data from a channel.
-proc get {chan {size line}} {
+proc wibble::get {chan {size line}} {
     if {$size eq "line"} {
         # Receive a line of text.
         while {1} {
@@ -195,8 +181,17 @@ proc get {chan {size line}} {
     }
 }
 
+# Version of [file join] that doesn't do ~user substitution and ignores leading
+# slashes, for all elements except the first.
+proc wibble::filejoin {args} {
+    for {set i 1} {$i < [llength $args]} {incr i} {
+        lset args $i ./[lindex $args $i]
+    }
+    string map {./ ""} [file join {*}$args]
+}
+
 # Decode hexadecimal URL encoding.
-proc unhex {str} {
+proc wibble::unhex {str} {
     set pos 0
     while {[regexp -indices -start $pos {%([[:xdigit:]]{2})} $str range code]} {
         set char [binary format H2 [string range $str {*}$code]]
@@ -207,12 +202,17 @@ proc unhex {str} {
 }
 
 # Zone handler return operation.
-proc operation {opcode {operand ""}} {
+proc wibble::operation {opcode {operand ""}} {
     return -level 2 -opcode $opcode $operand
 }
 
+# Register a zone handler.
+proc wibble::handle {zone command args} {
+    dict lappend wibble::zones $zone [list $command $args]
+}
+
 # Get an HTTP request from a client.
-proc getrequest {chan peerhost peerport} {
+proc wibble::getrequest {chan peerhost peerport} {
     # The HTTP header uses CR/LF line breaks.
     chan configure $chan -translation crlf
 
@@ -280,15 +280,15 @@ proc getrequest {chan peerhost peerport} {
 }
 
 # Get a response from the zone handlers.
-proc getresponse {request} {
+proc wibble::getresponse {request} {
+    variable zones
     set requests [list $request]
 
     # Process all zones.
-    dict for {prefix handlers} $::zones {
+    dict for {prefix handlers} $zones {
         # Process all handlers in this zone.
         foreach handler $handlers {
-            set command [lindex $handler 0]
-            set options [lrange $handler 1 end]
+            lassign $handler command options
 
             # Try all requests against this handler.
             for {set i 0} {$i < [llength $requests]} {incr i} {
@@ -360,7 +360,7 @@ proc getresponse {request} {
 }
 
 # Main connection processing loop.
-proc process {socket peerhost peerport} {
+proc wibble::process {socket peerhost peerport} {
     try {
         chan configure $socket -blocking 0
         while {1} {
@@ -467,15 +467,35 @@ proc process {socket peerhost peerport} {
 }
 
 # Accept an incoming connection.
-proc accept {socket peerhost peerport} {
-    chan event $socket readable $socket
+proc wibble::accept {socket peerhost peerport} {
+    chan event $socket readable [namespace code $socket]
     coroutine $socket process $socket $peerhost $peerport
 }
 
 # Listen for incoming connections.
-socket -server accept 8080
+proc wibble::listen {port} {
+    socket -server [namespace code accept] $port
+}
 
-# Enter the event loop.
-vwait forever
+# Demonstrate Wibble if being run directly.
+if {$argv0 eq [info script]} {
+    # Guess the root directory.
+    set root [file normalize [file dirname [info script]]]
+
+    # Define zone handlers.
+    wibble::handle /vars vars
+    wibble::handle / dirslash root $root
+    wibble::handle / indexfile root $root indexfile index.html
+    wibble::handle / static root $root
+    wibble::handle / template root $root
+    wibble::handle / dirlist root $root
+    wibble::handle / notfound
+
+    # Start a server.
+    wibble::listen 8080
+
+    # Enter the event loop.
+    vwait forever
+}
 
 # vim: set sts=4 sw=4 tw=80 et ft=tcl:
