@@ -240,7 +240,7 @@ proc getrequest {chan peerhost peerport} {
             break
         }
         if {[regexp {^\s*([^:]*)\s*:\s*(.*)\s*$} $header _ key val]} {
-            dict set request header $key $val
+            dict set request header [string tolower $key] $val
         }
     }
 
@@ -384,12 +384,14 @@ proc process {socket peerhost peerport} {
                 set size 0
             }
 
-            # Parse the Range request header if present.
+            # Parse the Range request header if present and valid.
             set begin 0
             set end [expr {$size - 1}]
             if {[dict exists $request header range]
              && [regexp {^bytes=(\d*)-(\d*)$} [dict get $request header range]\
-                        _ begin end]} {
+                        _ begin end]
+             && [dict get $response status] == 200} {
+                dict set response status 206
                 if {$begin eq "" || $begin >= $size} {
                     set begin 0
                 }
@@ -401,7 +403,7 @@ proc process {socket peerhost peerport} {
             # Add content-length and content-range response headers.
             set length [expr {$end - $begin + 1}]
             dict set response header content-length $length
-            if {[dict exists $request header range]} {
+            if {[dict get $response status] == 206} {
                 dict set response header content-range "bytes $begin-$end/$size"
             }
 
