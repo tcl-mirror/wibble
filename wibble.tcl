@@ -373,7 +373,7 @@ proc wibble::process {socket peerhost peerport} {
                 if {[dict get $request method] ne "HEAD"} {
                     # Open the channel now, to catch errors early.
                     set file [open [dict get $response contentfile]]
-                    chan configure $file -encoding binary
+                    chan configure $file -translation binary
                 }
             } elseif {[dict exists $response content]} {
                 dict set response content [encoding convertto iso8859-1\
