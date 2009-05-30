@@ -17,11 +17,11 @@ dict lappend zones / [list dirlist root $root]
 dict lappend zones / [list notfound]
 
 # Echo request dictionary.
-proc vars {args} {
+proc vars {request} {
     dict set response status 200
     dict set response header Content-Type "text/html; charset=utf-8"
     dict set response content {<html><body><table border="1">}
-    dict for {key val} $args {
+    dict for {key val} $request {
         if {$key in {header query}} {
             set newval ""
             dict for {subkey subval} $val {
@@ -32,44 +32,44 @@ proc vars {args} {
         dict append response content <tr><td><b>$key</b></td><td>$val</td></tr>
     }
     dict append response content </table></body></html>\n
-    return [list sendresponse $response]
+    operation sendresponse $response
 }
 
 # Redirect when a directory is requested without a trailing slash.
-proc dirslash {args} {
-    dict with args {
+proc dirslash {request} {
+    dict with request {
         if {[file isdirectory $fspath]
          && [string index $suffix end] ni {/ ""}} {
             dict set response status 301
             dict set response header Location $path/$querytext
-            return [list sendresponse $response]
+            operation sendresponse $response
         } else {
-            return pass
+            operation pass
         }
     }
 }
 
 # Rewrite directory requests to search for an indexfile.
-proc indexfile {args} {
-    dict with args {
+proc indexfile {request} {
+    dict with request {
         if {[file isdirectory $fspath]} {
             if {[string index $path end] ne "/"} {
                 append path /
             }
             dict set request path $path$indexfile
-            return [list prependrequest $request]
+            operation prependrequest $request
         } else {
-            return pass
+            operation pass
         }
     }
 }
 
 # Generate directory listings.
-proc dirlist {args} {
-    dict with args {
+proc dirlist {request} {
+    dict with request {
         if {![file isdirectory $fspath]} {
             # Pass if the requested object is not a directory or doesn't exist.
-            return pass
+            pass
         } elseif {[file readable $fspath]} {
             # If the directory is readable, generate a listing.
             dict set response status 200
@@ -81,20 +81,20 @@ proc dirlist {args} {
                     "<a href=\"$elem\">$elem</a><br />"
             }
             dict append response content </body></html>\n
-            return [list sendresponse $response]
+            operation sendresponse $response
         } else {
             # But if it isn't readable, generate a 403.
             dict set response status 403
             dict set response header Content-Type "text/plain; charset=utf-8"
             dict set response content Forbidden\n
-            return [list sendresponse $response]
+            operation sendresponse $response
         }
     }
 }
 
 # Process templates.
-proc template {args} {
-    dict with args {
+proc template {request} {
+    dict with request {
         if {[file readable $fspath.tmpl]} {
             dict set response status 200
             dict set response header Content-Type "text/plain; charset=utf-8"
@@ -102,30 +102,30 @@ proc template {args} {
             set chan [open $fspath.tmpl]
             applytemplate "dict append response content" [read $chan]
             chan close $chan
-            return [list sendresponse $response]
+            operation sendresponse $response
         } else {
-            return pass
+            operation pass
         }
     }
 }
 
 # Send static files.
-proc static {args} {
-    dict with args {
+proc static {request} {
+    dict with request {
         if {![file isdirectory $fspath] && [file exists $fspath]} {
             dict set response status 200
             dict set response contentfile $fspath
-            return [list sendresponse $response]
+            operation sendresponse $response
         } else {
-            return pass
+            operation pass
         }
     }
 }
 
 # Send a 404.
-proc notfound {args} {
-    return [list sendresponse\
-        [dict create status 404 content "can't find [dict get $args uri]"\
+proc notfound {request} {
+    operation sendresponse [dict create status 404\
+        content "can't find [dict get $request uri]"\
         header [dict create Content-Type "text/plain; charset=utf-8"\
                Connection keep-alive]]]
 }
@@ -204,6 +204,11 @@ proc unhex {str} {
         set pos [expr {[lindex $range 0] + 1}]
     }
     return $str
+}
+
+# Zone handler return operation.
+proc operation {opcode {operand ""}} {
+    return -level 2 -opcode $opcode $operand
 }
 
 # Get an HTTP request from a client.
@@ -316,10 +321,12 @@ proc getresponse {request} {
 
                 # Invoke the handler.
                 set arguments [dict merge $request $options $extras]
-                lassign [{*}$command {*}$arguments] operation operand
+                if {[catch {{*}$command $arguments} operand opcode]} {
+                    return -options $opcode $operand
+                }
 
                 # Process the handler's result operation.
-                switch -- $operation {
+                switch -- [dict get $opcode -opcode] {
                 prependrequest {
                     # Put a new higher-priority request in the list.
                     set operand [dict merge $request $operand]
@@ -341,7 +348,7 @@ proc getresponse {request} {
                 } pass {
                     # Fall through to try next request.
                 } default {
-                    error "invalid operation \"$operation\""
+                    error "invalid opcode \"[dict get $opcode -opcode]\""
                 }}
             }
         }
