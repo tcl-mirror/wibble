@@ -69,7 +69,7 @@ proc dirlist {request} {
     dict with request {
         if {![file isdirectory $fspath]} {
             # Pass if the requested object is not a directory or doesn't exist.
-            pass
+            operation pass
         } elseif {[file readable $fspath]} {
             # If the directory is readable, generate a listing.
             dict set response status 200
