@@ -167,7 +167,7 @@ proc get {chan {size line}} {
             if {[chan pending input $chan] > 4096} {
                 chan puts stderr "line length greater than 4096"
                 chan close $chan
-                return -1
+                return -level [info level]
             } elseif {[chan gets $chan line] >= 0} {
                 return $line
             } elseif {[chan eof $chan]} {
