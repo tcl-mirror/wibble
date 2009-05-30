@@ -217,7 +217,7 @@ proc getrequest {chan peerhost peerport} {
     chan configure $chan -translation crlf
 
     # Parse the first line.
-    regexp {^\s*(\S*)\s+(\S*)\s+(.*)\s*$} [get $chan] _ method uri protocol
+    regexp {^\s*(\S*)\s+(\S*)\s+(.*?)\s*$} [get $chan] _ method uri protocol
     regexp {^([^?]*)(\?.*)?$} $uri _ path query
     set path [unhex $path]
     set path [regsub -all {(?:/|^)\.(?=/|$)} $path /]
