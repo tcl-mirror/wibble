@@ -478,7 +478,7 @@ proc wibble::process {socket peerhost peerport} {
             chan puts -nonewline $socket $message
         }
     } finally {
-        chan close $socket
+        catch {chan close $socket}
     }
 }
 
