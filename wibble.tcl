@@ -444,12 +444,28 @@ proc wibble::process {socket peerhost peerport} {
             chan flush $socket
         }
     } on error {"" options} {
-        # Log errors.
-        set message "[clock format [clock seconds]]: INTERNAL SERVER ERROR\n"
-        dict for {key val} $options {
-            append message "$key = $val\n"
+        # Log errors and report them to the client, if possible.
+        variable errorcount
+        incr errorcount
+        set message "*** INTERNAL SERVER ERROR (BEGIN #$errorcount) ***\n"
+        append message "time: [clock format [clock seconds]]\n"
+        append message "address: $peerhost\n"
+        if {[info exists request]} {
+            dict for {key val} $request {
+                if {$key eq "content" && [string length $val] > 256} {
+                    append message "request $key (len=[string length $val])\n"
+                } elseif {$key in {header query}} { 
+                    dict for {subkey subval} $val {
+                        append message "request $key $subkey: $subval\n"
+                    }
+                } else {
+                    append message "request $key: $val\n"
+                }
+            }
         }
-        chan puts -nonewline stderr $message
+        append message "errorinfo: [dict get $options -errorinfo]\n"
+        append message "*** INTERNAL SERVER ERROR (END #$errorcount) ***\n"
+        log $message
         try {
             set message [encoding convertto iso8859-1 $message]
             chan configure $socket -translation crlf
@@ -460,9 +476,9 @@ proc wibble::process {socket peerhost peerport} {
             chan puts $socket ""
             chan configure $socket -translation binary
             chan puts -nonewline $socket $message
-        } finally {
-            chan close $socket
         }
+    } finally {
+        chan close $socket
     }
 }
 
@@ -475,6 +491,11 @@ proc wibble::accept {socket peerhost peerport} {
 # Listen for incoming connections.
 proc wibble::listen {port} {
     socket -server [namespace code accept] $port
+}
+
+# Log an error.  Feel free to replace this procedure as needed.
+proc wibble::log {message} {
+    chan puts stderr -nonewline $message
 }
 
 # Demonstrate Wibble if being run directly.
