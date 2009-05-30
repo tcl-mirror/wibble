@@ -127,7 +127,7 @@ proc notfound {request} {
     operation sendresponse [dict create status 404\
         content "can't find [dict get $request uri]"\
         header [dict create Content-Type "text/plain; charset=utf-8"\
-               Connection keep-alive]]]
+               Connection keep-alive]]
 }
 
 # Version of [file join] that doesn't do ~user substitution and ignores leading
