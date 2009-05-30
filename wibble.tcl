@@ -19,7 +19,7 @@ dict lappend zones / [list notfound]
 # Echo request dictionary.
 proc vars {request} {
     dict set response status 200
-    dict set response header Content-Type "text/html; charset=utf-8"
+    dict set response header content-type "text/html; charset=utf-8"
     dict set response content {<html><body><table border="1">}
     dict for {key val} $request {
         if {$key in {header query}} {
@@ -41,7 +41,7 @@ proc dirslash {request} {
         if {[file isdirectory $fspath]
          && [string index $suffix end] ni {/ ""}} {
             dict set response status 301
-            dict set response header Location $path/$querytext
+            dict set response header location $path/$querytext
             operation sendresponse $response
         } else {
             operation pass
@@ -73,7 +73,7 @@ proc dirlist {request} {
         } elseif {[file readable $fspath]} {
             # If the directory is readable, generate a listing.
             dict set response status 200
-            dict set response header Content-Type "text/html; charset=utf-8"
+            dict set response header content-type "text/html; charset=utf-8"
             dict set response content <html><body>
             foreach elem [concat [list ..]\
             [lsort [glob -nocomplain -tails -directory $fspath *]]] {
@@ -85,7 +85,7 @@ proc dirlist {request} {
         } else {
             # But if it isn't readable, generate a 403.
             dict set response status 403
-            dict set response header Content-Type "text/plain; charset=utf-8"
+            dict set response header content-type "text/plain; charset=utf-8"
             dict set response content Forbidden\n
             operation sendresponse $response
         }
@@ -97,7 +97,7 @@ proc template {request} {
     dict with request {
         if {[file readable $fspath.tmpl]} {
             dict set response status 200
-            dict set response header Content-Type "text/plain; charset=utf-8"
+            dict set response header content-type "text/plain; charset=utf-8"
             dict set response content ""
             set chan [open $fspath.tmpl]
             applytemplate "dict append response content" [read $chan]
@@ -126,8 +126,8 @@ proc static {request} {
 proc notfound {request} {
     operation sendresponse [dict create status 404\
         content "can't find [dict get $request uri]"\
-        header [dict create Content-Type "text/plain; charset=utf-8"\
-               Connection keep-alive]]
+        header [dict create content-type "text/plain; charset=utf-8"\
+               connection keep-alive]]
 }
 
 # Version of [file join] that doesn't do ~user substitution and ignores leading
@@ -217,7 +217,7 @@ proc getrequest {chan peerhost peerport} {
     chan configure $chan -translation crlf
 
     # Parse the first line.
-    regexp {^(\S*) (\S*) (\S*)$} [get $chan] _ method uri protocol
+    regexp {^\s*(\S*)\s+(\S*)\s+(.*)\s*$} [get $chan] _ method uri protocol
     regexp {^([^?]*)(\?.*)?$} $uri _ path query
     set path [unhex $path]
     set path [regsub -all {(?:/|^)\.(?=/|$)} $path /]
@@ -239,7 +239,7 @@ proc getrequest {chan peerhost peerport} {
         if {$header eq ""} {
             break
         }
-        if {[regexp {^([^:]*):\s*(.*)$} $header _ key val]} {
+        if {[regexp {^\s*([^:]*)\s*:\s*(.*)\s*$} $header _ key val]} {
             dict set request header $key $val
         }
     }
@@ -253,8 +253,8 @@ proc getrequest {chan peerhost peerport} {
 
     # Get the request body, if there is one.
     if {$method in {POST PUT}} {
-        if {[dict exists $request header Transfer-Encoding]
-         && [dict get $request header Transfer-Encoding] eq "chunked"} {
+        if {[dict exists $request header transfer-encoding]
+         && [dict get $request header transfer-encoding] eq "chunked"} {
             # Receive chunked request body.
             set data ""
             while {1} {
@@ -269,7 +269,7 @@ proc getrequest {chan peerhost peerport} {
         } else {
             # Receive non-chunked request body.
             chan configure $chan -translation binary
-            set length [dict get $request header Content-Length]
+            set length [dict get $request header content-length]
             set data [get $chan $length]
             chan configure $chan -translation crlf
         }
@@ -311,8 +311,7 @@ proc getresponse {request} {
 
                 # Compile a few extra arguments to pass to the handler.
                 set extras [dict create\
-                    prefix $prefix\
-                    suffix [string range $path $length end]]
+                    prefix $prefix suffix [string range $path $length end]]
                 if {[dict exists $options root]} {
                     dict set extras fspath [filejoin\
                         [dict get $options root]\
@@ -356,8 +355,8 @@ proc getresponse {request} {
 
     # Return 501 as default response.
     return [dict create status 501 content "not implemented: $uri"\
-        header [dict create Content-Type "text/plain; charset=utf-8"\
-                            Connection keep-alive]]
+        header [dict create content-type "text/plain; charset=utf-8"\
+                            connection keep-alive]]
 }
 
 # Main connection processing loop.
@@ -388,8 +387,8 @@ proc process {socket peerhost peerport} {
             # Parse the Range request header if present.
             set begin 0
             set end [expr {$size - 1}]
-            if {[dict exists $request header Range]
-             && [regexp {^bytes=(\d*)-(\d*)$} [dict get $request header Range]\
+            if {[dict exists $request header range]
+             && [regexp {^bytes=(\d*)-(\d*)$} [dict get $request header range]\
                         _ begin end]} {
                 if {$begin eq "" || $begin >= $size} {
                     set begin 0
@@ -399,15 +398,29 @@ proc process {socket peerhost peerport} {
                 }
             }
 
-            # Add Content-Length and Content-Range response headers.
+            # Add content-length and content-range response headers.
             set length [expr {$end - $begin + 1}]
-            dict set response header Content-Length $length
-            dict set response header Content-Range "bytes $begin-$end/$size"
+            dict set response header content-length $length
+            if {[dict exists $request header range]} {
+                dict set response header content-range "bytes $begin-$end/$size"
+            }
 
             # Send the response header to the client.
             chan puts $socket "HTTP/1.1 [dict get $response status]"
             dict for {key val} [dict get $response header] {
-                chan puts $socket "$key: $val"
+                set normalizedkey [lsearch -exact -sorted -inline -nocase {
+                    Accept-Ranges Age Allow Cache-Control Connection
+                    Content-Disposition Content-Encoding Content-Language
+                    Content-Length Content-Location Content-MD5 Content-Range
+                    Content-Type Date ETag Expires Last-Modified Location Pragma
+                    Proxy-Authenticate Retry-After Server Set-Cookie Trailer
+                    Transfer-Encoding Upgrade Vary Via Warning WWW-Authenticate
+                } $key]
+                if {$normalizedkey ne ""} {
+                    chan puts $socket "$normalizedkey: $val"
+                } else {
+                    chan puts $socket "$key: $val"
+                }
             }
             chan puts $socket ""
 
@@ -455,11 +468,6 @@ proc process {socket peerhost peerport} {
 proc accept {socket peerhost peerport} {
     chan event $socket readable $socket
     coroutine $socket process $socket $peerhost $peerport
-}
-
-# Log a background error.
-proc bgerror {trouble} {
-    chan puts stderr $::errorInfo
 }
 
 # Listen for incoming connections.
