@@ -121,8 +121,7 @@ proc wibble::static {request} {
 proc wibble::notfound {request} {
     operation sendresponse [dict create status 404\
         content "can't find [dict get $request uri]"\
-        header [dict create content-type "text/plain; charset=utf-8"\
-               connection keep-alive]]
+        header [dict create content-type "text/plain; charset=utf-8"]]
 }
 
 # Apply a template.
@@ -354,9 +353,9 @@ proc wibble::getresponse {request} {
     }
 
     # Return 501 as default response.
-    return [dict create status 501 content "not implemented: $uri"\
-        header [dict create content-type "text/plain; charset=utf-8"\
-                            connection keep-alive]]
+    return [dict create status 501\
+         content "not implemented: [dict get $request uri]"\
+        header [dict create content-type "text/plain; charset=utf-8"]]
 }
 
 # Main connection processing loop.
@@ -457,6 +456,7 @@ proc wibble::process {socket peerhost peerport} {
             chan puts $socket "HTTP/1.1 500 Internal Server Error"
             chan puts $socket "Content-Type: text/plain; charset=utf-8"
             chan puts $socket "Content-Length: [string length $message]"
+            chan puts $socket "Connection: close"
             chan puts $socket ""
             chan configure $socket -translation binary
             chan puts -nonewline $socket $message
