@@ -150,9 +150,7 @@ proc wibble::get {chan {size line}} {
         # Receive a line of text.
         while {1} {
             if {[chan pending input $chan] > 4096} {
-                chan puts stderr "line length greater than 4096"
-                chan close $chan
-                return -level [info level]
+                error "line length greater than 4096"
             } elseif {[chan gets $chan line] >= 0} {
                 return $line
             } elseif {[chan eof $chan]} {
@@ -218,11 +216,9 @@ proc wibble::getrequest {chan peerhost peerport} {
     # Parse the first line.
     regexp {^\s*(\S*)\s+(\S*)\s+(.*?)\s*$} [get $chan] _ method uri protocol
     regexp {^([^?]*)(\?.*)?$} $uri _ path query
-    set path [unhex $path]
-    set path [regsub -all {(?:/|^)\.(?=/|$)} $path /]
-    while {[regexp -indices {(?:/[^/]*/+|^[^/]*/+|^)\.\.(?=/|$)}\
-            $path range]} {
-        set path [string replace $path {*}$rng ""]
+    set path [regsub -all {(?:/|^)\.(?=/|$)} [unhex $path] /]
+    while {[regexp -indices {(?:/[^/]*/+|^[^/]*/+|^)\.\.(?=/|$)} $path range]} {
+        set path [string replace $path {*}$range ""]
     }
     set path [regsub -all {//+} /$path /]
 
@@ -232,14 +228,18 @@ proc wibble::getrequest {chan peerhost peerport} {
         header {} query {} querytext $query]
 
     # Parse the headers.
-    set headers {}
     while {1} {
         set header [get $chan]
         if {$header eq ""} {
             break
         }
-        if {[regexp {^\s*([^:]*)\s*:\s*(.*)\s*$} $header _ key val]} {
-            dict set request header [string tolower $key] $val
+        if {[regexp {^\s*([^:]*)\s*:\s*(.*?)\s*$} $header _ key val]
+         || ([info exists key] && [regexp {^\s*(.*?)\s*$} $header _ val])} {
+            set key [string tolower $key]
+            if {[dict exists $request header $key]} {
+                set val [dict get $request header $key]\n$val
+            }
+            dict set request header $key $val
         }
     }
 
@@ -256,11 +256,7 @@ proc wibble::getrequest {chan peerhost peerport} {
          && [dict get $request header transfer-encoding] eq "chunked"} {
             # Receive chunked request body.
             set data ""
-            while {1} {
-                set length [get $chan]
-                if {$length == 0} {
-                    break
-                }
+            while {[scan [get $chan] %x length] == 1 && $length > 0} {
                 chan configure $chan -translation binary
                 append data [get $chan $length]
                 chan configure $chan -translation crlf
@@ -418,9 +414,10 @@ proc wibble::process {socket peerhost peerport} {
                     Transfer-Encoding Upgrade Vary Via Warning WWW-Authenticate
                 } $key]
                 if {$normalizedkey ne ""} {
-                    chan puts $socket "$normalizedkey: $val"
-                } else {
-                    chan puts $socket "$key: $val"
+                    set key $normalizedkey
+                }
+                foreach line [split $val \n] {
+                    chan puts $socket "$key: $line"
                 }
             }
             chan puts $socket ""
@@ -495,7 +492,7 @@ proc wibble::listen {port} {
 
 # Log an error.  Feel free to replace this procedure as needed.
 proc wibble::log {message} {
-    chan puts stderr -nonewline $message
+    chan puts -nonewline stderr $message
 }
 
 # Demonstrate Wibble if being run directly.
