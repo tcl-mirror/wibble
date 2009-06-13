@@ -200,7 +200,7 @@ proc wibble::unhex {str} {
 
 # Zone handler return operation.
 proc wibble::operation {opcode {operand ""}} {
-    return -level 2 -opcode $opcode $operand
+    return -level 2 [list $opcode $operand]
 }
 
 # Register a zone handler.
@@ -314,13 +314,11 @@ proc wibble::getresponse {request} {
                 }
 
                 # Invoke the handler.
-                set arguments [dict merge $request $options $extras]
-                if {[catch {{*}$command $arguments} operand opcode]} {
-                    return -options $opcode $operand
-                }
+                lassign [{*}$command [dict merge $request $options $extras]]\
+                        opcode operand
 
                 # Process the handler's result operation.
-                switch -- [dict get $opcode -opcode] {
+                switch -- $opcode {
                 prependrequest {
                     # Put a new higher-priority request in the list.
                     set operand [dict merge $request $operand]
@@ -342,7 +340,7 @@ proc wibble::getresponse {request} {
                 } pass {
                     # Fall through to try next request.
                 } default {
-                    error "invalid opcode \"[dict get $opcode -opcode]\""
+                    error "invalid opcode \"$opcode\""
                 }}
             }
         }
