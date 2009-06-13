@@ -270,8 +270,7 @@ proc wibble::getrequest {chan peerhost peerport} {
         } else {
             # Receive non-chunked request body.
             chan configure $chan -translation binary
-            set length [dict get $request header content-length]
-            set data [get $chan $length]
+            set data [get $chan [dict get $request header content-length]]
             chan configure $chan -translation crlf
         }
         dict set request content $data
@@ -290,6 +289,11 @@ proc wibble::getresponse {request} {
 
     # Process all zones.
     dict for {prefix handlers} $zones {
+        set match $prefix
+        if {[string index $match end] ne "/"} {
+            append match /
+        }
+
         # Process all handlers in this zone.
         foreach handler $handlers {
             lassign $handler command options
@@ -299,22 +303,15 @@ proc wibble::getresponse {request} {
             foreach {request response} $state {
                 # Skip this request if it's not for the current zone.
                 set path [dict get $request path]
-                set length [string length $prefix]
-                if {[string index $prefix end] eq "/"} {
-                    set matchprefix $prefix
-                    set matchlength $length
-                } else {
-                    set matchprefix $prefix/
-                    set matchlength [expr {$length + 1}]
-                }
-                if {$path ne $prefix
-                 && ![string equal -length $matchlength $matchprefix $path]} {
+                if {$path ne $prefix && ![string equal\
+                        -length [string length $match] $match $path]} {
                     continue
                 }
 
                 # Inject a few extra keys into the request dict.
                 dict set request prefix $prefix
-                dict set request suffix [string range $path $length end]
+                dict set request suffix [string range $path\
+                                        [string length $prefix] end]
                 if {[dict exists $options root]} {
                     dict set request fspath [filejoin\
                         [dict get $options root] [dict get $request suffix]]
@@ -372,7 +369,7 @@ proc wibble::process {socket peerhost peerport} {
                 set size 0
             }
 
-            # Parse the Range request header if present and valid.
+            # Try to parse the Range request header if present.
             set begin 0
             set end [expr {$size - 1}]
             if {[dict exists $request header range]
@@ -389,8 +386,7 @@ proc wibble::process {socket peerhost peerport} {
             }
 
             # Add content-length and content-range response headers.
-            set length [expr {$end - $begin + 1}]
-            dict set response header content-length $length
+            dict set response header content-length [expr {$end - $begin + 1}]
             if {[dict get $response status] == 206} {
                 dict set response header content-range "bytes $begin-$end/$size"
             }
@@ -421,7 +417,7 @@ proc wibble::process {socket peerhost peerport} {
                 if {[dict exists $response contentfile]} {
                     # Send response content from a file.
                     chan seek $file $begin
-                    chan copy $file $socket -size $length
+                    chan copy $file $socket -size [expr {$end - $begin + 1}]
                     chan close $file
                 } elseif {[dict exists $response content]} {
                     # Send buffered response content.
