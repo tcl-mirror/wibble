@@ -12,7 +12,7 @@ namespace eval wibble {
 }
 
 # Echo request dictionary.
-proc wibble::vars {request} {
+proc wibble::vars {request response} {
     dict set response status 200
     dict set response header content-type "text/html; charset=utf-8"
     dict set response content {<html><body><table border="1">}
@@ -27,68 +27,68 @@ proc wibble::vars {request} {
         dict append response content <tr><td><b>$key</b></td><td>$val</td></tr>
     }
     dict append response content </table></body></html>\n
-    operation sendresponse $response
+    sendresponse $response
 }
 
 # Redirect when a directory is requested without a trailing slash.
-proc wibble::dirslash {request} {
+proc wibble::dirslash {request response} {
     dict with request {
         if {[file isdirectory $fspath]
          && [string index $suffix end] ni {/ ""}} {
             dict set response status 301
             dict set response header location $path/$querytext
-            operation sendresponse $response
+            sendresponse $response
         } else {
-            operation pass
+            nexthandler $request $response
         }
     }
 }
 
 # Rewrite directory requests to search for an indexfile.
-proc wibble::indexfile {request} {
+proc wibble::indexfile {request response} {
     dict with request {
         if {[file isdirectory $fspath]} {
             if {[string index $path end] ne "/"} {
                 append path /
             }
-            dict set request path $path$indexfile
-            operation prependrequest $request
+            set newrequest $request
+            dict set newrequest path $path$indexfile
+            nexthandler $newrequest $response $request $response
         } else {
-            operation pass
+            nexthandler $request $response
         }
     }
 }
 
 # Generate directory listings.
-proc wibble::dirlist {request} {
+proc wibble::dirlist {request response} {
     dict with request {
         if {![file isdirectory $fspath]} {
             # Pass if the requested object is not a directory or doesn't exist.
-            operation pass
+            nexthandler $request $response
         } elseif {[file readable $fspath]} {
             # If the directory is readable, generate a listing.
             dict set response status 200
             dict set response header content-type "text/html; charset=utf-8"
             dict set response content <html><body>
             foreach elem [concat [list ..]\
-            [lsort [glob -nocomplain -tails -directory $fspath *]]] {
-                dict append response content\
-                    "<a href=\"$elem\">$elem</a><br />"
+                    [lsort [glob -nocomplain -tails -directory $fspath *]]] {
+                dict append response content "<a href=\"$elem\">$elem</a><br />"
             }
             dict append response content </body></html>\n
-            operation sendresponse $response
+            sendresponse $response
         } else {
             # But if it isn't readable, generate a 403.
             dict set response status 403
             dict set response header content-type "text/plain; charset=utf-8"
             dict set response content Forbidden\n
-            operation sendresponse $response
+            sendresponse $response
         }
     }
 }
 
 # Process templates.
-proc wibble::template {request} {
+proc wibble::template {request response} {
     dict with request {
         if {[file readable $fspath.tmpl]} {
             dict set response status 200
@@ -97,31 +97,32 @@ proc wibble::template {request} {
             set chan [open $fspath.tmpl]
             applytemplate "dict append response content" [read $chan]
             chan close $chan
-            operation sendresponse $response
+            sendresponse $response
         } else {
-            operation pass
+            nexthandler $request $response
         }
     }
 }
 
 # Send static files.
-proc wibble::static {request} {
+proc wibble::static {request response} {
     dict with request {
         if {![file isdirectory $fspath] && [file exists $fspath]} {
             dict set response status 200
             dict set response contentfile $fspath
-            operation sendresponse $response
+            sendresponse $response
         } else {
-            operation pass
+            nexthandler $request $response
         }
     }
 }
 
 # Send a 404.
-proc wibble::notfound {request} {
-    operation sendresponse [dict create status 404\
-        content "can't find [dict get $request uri]"\
-        header [dict create content-type "text/plain; charset=utf-8"]]
+proc wibble::notfound {request response} {
+    dict set response status 404
+    dict set response header content-type "text/plain; charset=utf-8"
+    dict set response content "can't find [dict get $request uri]\n"
+    sendresponse $response
 }
 
 # Apply a template.
@@ -198,9 +199,14 @@ proc wibble::unhex {str} {
     return $str
 }
 
-# Zone handler return operation.
-proc wibble::operation {opcode {operand ""}} {
-    return -level 2 [list $opcode $operand]
+# Advance to the next zone handler using the specified request/response list.
+proc wibble::nexthandler {args} {
+    return -level 2 $args
+}
+
+# Send a response to the client.
+proc wibble::sendresponse {response} {
+    return -level 2 [list $response]
 }
 
 # Register a zone handler.
@@ -277,7 +283,10 @@ proc wibble::getrequest {chan peerhost peerport} {
 # Get a response from the zone handlers.
 proc wibble::getresponse {request} {
     variable zones
-    set requests [list $request]
+    set state [list $request [dict create status 500 content "Zone error\n"]]
+    dict set fallback status 501
+    dict set fallback content "not implemented: [dict get $request uri]\n"
+    dict set fallback header content-type "text/plain; charset=utf-8"
 
     # Process all zones.
     dict for {prefix handlers} $zones {
@@ -285,10 +294,9 @@ proc wibble::getresponse {request} {
         foreach handler $handlers {
             lassign $handler command options
 
-            # Try all requests against this handler.
-            for {set i 0} {$i < [llength $requests]} {incr i} {
-                set request [lindex $requests $i]
-
+            # Try all request/response pairs against this handler.
+            set i 0
+            foreach {request response} $state {
                 # Skip this request if it's not for the current zone.
                 set path [dict get $request path]
                 set length [string length $prefix]
@@ -304,52 +312,39 @@ proc wibble::getresponse {request} {
                     continue
                 }
 
-                # Compile a few extra arguments to pass to the handler.
-                set extras [dict create\
-                    prefix $prefix suffix [string range $path $length end]]
+                # Inject a few extra keys into the request dict.
+                dict set request prefix $prefix
+                dict set request suffix [string range $path $length end]
                 if {[dict exists $options root]} {
-                    dict set extras fspath [filejoin\
-                        [dict get $options root]\
-                        [dict get $extras suffix]]
+                    dict set request fspath [filejoin\
+                        [dict get $options root] [dict get $request suffix]]
                 }
+                set request [dict merge $request $options]
 
-                # Invoke the handler.
-                lassign [{*}$command [dict merge $request $options $extras]]\
-                        opcode operand
-
-                # Process the handler's result operation.
-                switch -- $opcode {
-                prependrequest {
-                    # Put a new higher-priority request in the list.
-                    set operand [dict merge $request $operand]
-                    set requests [linsert $requests $i $operand]
-                    incr i
-                    break
-                } replacerequest {
-                    # Replace the request.
-                    set operand [dict merge $request $operand]
-                    set requests [lreplace $requests $i $i $operand]
-                    break
-                } deleterequest {
-                    # Delete the request.
-                    set requests [lreplace $requests $i $i]
-                    break
-                } sendresponse {
+                # Invoke the handler and process its outcome.
+                set outcome [{*}$command $request $response]
+                if {[llength $outcome] == 1} {
                     # A response has been obtained.  Return it.
-                    return $operand
-                } pass {
-                    # Fall through to try next request.
-                } default {
-                    error "invalid opcode \"$opcode\""
-                }}
+                    return [lindex $outcome 0]
+                } elseif {[llength $outcome] % 2 == 0} {
+                    # Filter out extra keys from the new request dicts.
+                    for {set j 0} {$j < [llength $outcome]} {incr j 2} {
+                        lset outcome $j [dict remove [lindex $outcome $j]\
+                                prefix suffix fspath {*}[dict keys $options]]
+                    }
+
+                    # Update the state tree and continue processing.
+                    set state [lreplace $state $i $i+1 {*}$outcome]
+                } else {
+                    error "invalid zone handler outcome"
+                }
+                incr i 2
             }
         }
     }
 
     # Return 501 as default response.
-    return [dict create status 501\
-         content "not implemented: [dict get $request uri]"\
-        header [dict create content-type "text/plain; charset=utf-8"]]
+    return $fallback
 }
 
 # Main connection processing loop.
