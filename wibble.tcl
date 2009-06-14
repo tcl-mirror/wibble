@@ -452,7 +452,7 @@ proc wibble::process {socket peerhost peerport} {
         append message "errorinfo: [dict get $options -errorinfo]\n"
         append message "*** INTERNAL SERVER ERROR (END #$errorcount) ***\n"
         log $message
-        try {
+        catch {
             set message [encoding convertto iso8859-1 $message]
             chan configure $socket -translation crlf
             chan puts $socket "HTTP/1.1 500 Internal Server Error"
@@ -498,11 +498,12 @@ if {$argv0 eq [info script]} {
     wibble::handle / dirlist root $root
     wibble::handle / notfound
 
-    # Start a server.
-    wibble::listen 8080
-
-    # Enter the event loop.
-    vwait forever
+    # Start a server and enter the event loop.
+    catch {
+        wibble::listen 8080
+        vwait forever
+    }
 }
 
 # vim: set sts=4 sw=4 tw=80 et ft=tcl:
+
