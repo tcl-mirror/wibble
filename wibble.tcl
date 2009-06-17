@@ -492,7 +492,6 @@ if {$argv0 eq [info script]} {
     wibble::handle / template root $root
     wibble::handle / dirlist root $root
     wibble::handle / notfound
-    wibble::handle / contentrange
 
     # Start a server and enter the event loop.
     catch {
