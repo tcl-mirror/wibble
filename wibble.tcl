@@ -7,7 +7,6 @@ package provide wibble 0.1
 
 # Define the wibble namespace.
 namespace eval wibble {
-    namespace export filejoin unhex operation handle listen
     variable zones {}
 }
 
@@ -36,7 +35,7 @@ proc wibble::dirslash {request response} {
         if {[file isdirectory $fspath]
          && [string index $suffix end] ni {/ ""}} {
             dict set response status 301
-            dict set response header location $path/$querytext
+            dict set response header location $path/$rawquery
             sendresponse $response
         } else {
             nexthandler $request $response
@@ -145,36 +144,35 @@ proc wibble::applytemplate {command template} {
     uplevel 1 $script
 }
 
-# Get a line or a block of data from a channel.
-proc wibble::get {chan {size line}} {
-    if {$size eq "line"} {
-        # Receive a line of text.
-        while {1} {
-            if {[chan pending input $chan] > 4096} {
-                error "line length greater than 4096"
-            } elseif {[chan gets $chan line] >= 0} {
-                return $line
-            } elseif {[chan eof $chan]} {
-                chan close $chan
-                return -level [info level]
-            } else {
-                yield
-            }
+# Get a line of data from a channel.
+proc wibble::getline {chan} {
+    while {1} {
+        if {[chan pending input $chan] > 4096} {
+            error "line length greater than 4096"
+        } elseif {[chan gets $chan line] >= 0} {
+            return $line
+        } elseif {[chan eof $chan]} {
+            chan close $chan
+            return -level [info level]
+        } else {
+            yield
         }
-    } else {
-        # Receive a block of data.
-        while {1} {
-            set chunklet [chan read $chan $size]
-            set size [expr {$size - [string length $chunklet]}]
-            append chunk $chunklet
-            if {$size == 0} {
-                return $chunk
-            } elseif {[chan eof $chan]} {
-                chan close $chan
-                return -level [info level]
-            } else {
-                yield
-            }
+    }
+}
+
+# Get a block of data from a channel.
+proc wibble::getblock {chan size} {
+    while {1} {
+        set chunklet [chan read $chan $size]
+        set size [expr {$size - [string length $chunklet]}]
+        append chunk $chunklet
+        if {$size == 0} {
+            return $chunk
+        } elseif {[chan eof $chan]} {
+            chan close $chan
+            return -level [info level]
+        } else {
+            yield
         }
     }
 }
@@ -220,7 +218,7 @@ proc wibble::getrequest {chan peerhost peerport} {
     chan configure $chan -translation crlf
 
     # Parse the first line.
-    regexp {^\s*(\S*)\s+(\S*)\s+(.*?)\s*$} [get $chan] _ method uri protocol
+    regexp {^\s*(\S*)\s+(\S*)\s+(.*?)\s*$} [getline $chan] _ method uri protocol
     regexp {^([^?]*)(\?.*)?$} $uri _ path query
     set path [regsub -all {(?:/|^)\.(?=/|$)} [unhex $path] /]
     while {[regexp -indices {(?:/[^/]*/+|^[^/]*/+|^)\.\.(?=/|$)} $path range]} {
@@ -231,16 +229,13 @@ proc wibble::getrequest {chan peerhost peerport} {
     # Start building the request structure.
     set request [dict create socket $chan peerhost $peerhost peerport\
         $peerport method $method uri $uri path $path protocol $protocol\
-        header {} query {} querytext $query]
+        header {} rawheader {} query {} rawquery $query]
 
     # Parse the headers.
-    while {1} {
-        set header [get $chan]
-        if {$header eq ""} {
-            break
-        }
-        if {[regexp {^\s*([^:]*)\s*:\s*(.*?)\s*$} $header _ key val]
-         || ([info exists key] && [regexp {^\s*(.*?)\s*$} $header _ val])} {
+    while {[set line [getline $chan]] ne ""} {
+        dict lappend request rawheader $line
+        if {[regexp {^\s*([^:]*)\s*:\s*(.*?)\s*$} $line _ key val]
+         || ([info exists key] && [regexp {^\s*(.*?)\s*$} $line _ val])} {
             set key [string tolower $key]
             if {[dict exists $request header $key]} {
                 set val [dict get $request header $key]\n$val
@@ -262,15 +257,15 @@ proc wibble::getrequest {chan peerhost peerport} {
          && [dict get $request header transfer-encoding] eq "chunked"} {
             # Receive chunked request body.
             set data ""
-            while {[scan [get $chan] %x length] == 1 && $length > 0} {
+            while {[scan [getline $chan] %x length] == 1 && $length > 0} {
                 chan configure $chan -translation binary
-                append data [get $chan $length]
+                append data [getblock $chan $length]
                 chan configure $chan -translation crlf
             }
         } else {
             # Receive non-chunked request body.
             chan configure $chan -translation binary
-            set data [get $chan [dict get $request header content-length]]
+            set data [getline $chan [dict get $request header content-length]]
             chan configure $chan -translation crlf
         }
         dict set request content $data
@@ -440,7 +435,7 @@ proc wibble::process {socket peerhost peerport} {
             dict for {key val} $request {
                 if {$key eq "content" && [string length $val] > 256} {
                     append message "request $key (len=[string length $val])\n"
-                } elseif {$key in {header query}} { 
+                } elseif {$key in {header query}} {
                     dict for {subkey subval} $val {
                         append message "request $key $subkey: $subval\n"
                     }
@@ -497,6 +492,7 @@ if {$argv0 eq [info script]} {
     wibble::handle / template root $root
     wibble::handle / dirlist root $root
     wibble::handle / notfound
+    wibble::handle / contentrange
 
     # Start a server and enter the event loop.
     catch {
