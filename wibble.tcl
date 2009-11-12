@@ -1,4 +1,9 @@
 #!/bin/sh
+#
+# Wibble - a pure-Tcl Web server.  http://wiki.tcl.tk/23626
+# Copyright 2009 Andy Goth.  mailto:unununium/at/aircanopy/dot/net
+# Available under the Tcl/Tk license.  http://tcl.tk/software/tcltk/license.html
+#
 # The next line restarts with tclsh.\
 exec tclsh "$0" ${1+"$@"}
 
@@ -147,10 +152,14 @@ proc wibble::applytemplate {command template} {
 # Get a line of data from a channel.
 proc wibble::getline {chan} {
     while {1} {
-        if {[chan pending input $chan] > 4096} {
-            error "line length greater than 4096"
-        } elseif {[chan gets $chan line] >= 0} {
+        if {[chan gets $chan line] >= 0} {
             return $line
+        } elseif {[chan pending input $chan] > 4096} {
+            if {[chan gets $chan line] >= 0} {
+                return $line
+            } else {
+                error "line length greater than 4096"
+            }
         } elseif {[chan eof $chan]} {
             chan close $chan
             return -level [info level]
@@ -175,15 +184,6 @@ proc wibble::getblock {chan size} {
             yield
         }
     }
-}
-
-# Version of [file join] that doesn't do ~user substitution and ignores leading
-# slashes, for all elements except the first.
-proc wibble::filejoin {args} {
-    for {set i 1} {$i < [llength $args]} {incr i} {
-        lset args $i ./[lindex $args $i]
-    }
-    string map {./ ""} [file join {*}$args]
 }
 
 # Decode hexadecimal URL encoding.
@@ -308,8 +308,8 @@ proc wibble::getresponse {request} {
                 dict set request suffix [string range $path\
                                         [string length $prefix] end]
                 if {[dict exists $options root]} {
-                    dict set request fspath [filejoin\
-                        [dict get $options root] [dict get $request suffix]]
+                    dict set request fspath\
+                        [dict get $options root]/[dict get $request suffix]
                 }
                 set request [dict merge $request $options]
 
