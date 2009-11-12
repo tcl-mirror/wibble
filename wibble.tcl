@@ -18,7 +18,7 @@ namespace eval wibble {
 # Echo request dictionary.
 proc wibble::vars {request response} {
     dict set response status 200
-    dict set response header content-type "text/html; charset=utf-8"
+    dict set response header content-type text/html
     dict set response content {<html><body><table border="1">}
     dict for {key val} $request {
         if {$key in {header query}} {
@@ -73,7 +73,7 @@ proc wibble::dirlist {request response} {
         } elseif {[file readable $fspath]} {
             # If the directory is readable, generate a listing.
             dict set response status 200
-            dict set response header content-type "text/html; charset=utf-8"
+            dict set response header content-type text/html
             dict set response content <html><body>
             foreach elem [concat [list ..]\
                     [lsort [glob -nocomplain -tails -directory $fspath *]]] {
@@ -84,7 +84,7 @@ proc wibble::dirlist {request response} {
         } else {
             # But if it isn't readable, generate a 403.
             dict set response status 403
-            dict set response header content-type "text/plain; charset=utf-8"
+            dict set response header content-type text/plain
             dict set response content Forbidden\n
             sendresponse $response
         }
@@ -96,7 +96,7 @@ proc wibble::template {request response} {
     dict with request {
         if {[file readable $fspath.tmpl]} {
             dict set response status 200
-            dict set response header content-type "text/plain; charset=utf-8"
+            dict set response header content-type text/plain
             dict set response content ""
             set chan [open $fspath.tmpl]
             applytemplate "dict append response content" [read $chan]
@@ -124,7 +124,7 @@ proc wibble::static {request response} {
 # Send a 404.
 proc wibble::notfound {request response} {
     dict set response status 404
-    dict set response header content-type "text/plain; charset=utf-8"
+    dict set response header content-type text/plain
     dict set response content "can't find [dict get $request uri]\n"
     sendresponse $response
 }
@@ -280,7 +280,7 @@ proc wibble::getresponse {request} {
     set state [list $request [dict create status 500 content "Zone error\n"]]
     dict set fallback status 501
     dict set fallback content "not implemented: [dict get $request uri]\n"
-    dict set fallback header content-type "text/plain; charset=utf-8"
+    dict set fallback header content-type text/plain
 
     # Process all zones.
     dict for {prefix handlers} $zones {
