@@ -1,10 +1,11 @@
 #!/usr/bin/env tclsh
-# Wibble - a pure-Tcl Web server.  http://wiki.tcl.tk/23626
-# Copyright 2012 Andy Goth.  mailto/andrew.m.goth/at/gmail/dot/com
+# Wibble - a pure-Tcl Web server.
+# Code: https://chiselapp.com/user/andy/repository/wibble/timeline
+# Discussion: http://wiki.tcl.tk/23626
+# Copyright 2009-2014 Andy Goth.  mailto/andrew.m.goth/at/gmail/dot/com
 # Available under the Tcl/Tk license.  http://tcl.tk/software/tcltk/license.html
 
 package require Tcl 8.6
-package provide wibble 0.4
 
 # Define the wibble namespace.
 namespace eval ::wibble {
@@ -789,7 +790,7 @@ proc ::wibble::icc::get {fids filters {timeout ""}} {
         set result [list [yield]]
         if {[lindex $result 0 0] eq "exception"} {
             set code 7
-        } elseif {![llength [lindex $result 0]]} { 
+        } elseif {![llength [lindex $result 0]]} {
             set result {}
         }
         foreach fid $fids {
@@ -917,6 +918,7 @@ proc ::wibble::getrequest {port chan peerhost peerport} {
     regsub -all {(?:/|^)\.(?=/|$)} [dehex $path] / path
     while {[regsub {(?:/[^/]*/+|^[^/]*/+|^)\.\.(?=/|$)} $path "" path]} {}
     regsub -all {//+} /$path / path
+    set protocol [string toupper $protocol]
 
     # Start building the request structure.
     set request [dict create socket $chan peerhost $peerhost peerport $peerport\
@@ -1070,6 +1072,12 @@ proc ::wibble::getresponse {request} {
 
 # Default send handler: send the response to the client using HTTP.
 proc ::wibble::defaultsend {socket request response} {
+    # Determine if the connection is persistent.
+    set persist [expr {
+        [dict get $request protocol] >= "http/1.1"
+     && ![string equal -nocase [dict getnull $request header connection] close]
+    }]
+
     # Get the content channel and/or size.
     set size 0
     if {[dict exists $response contentfile]} {
@@ -1106,8 +1114,13 @@ proc ::wibble::defaultsend {socket request response} {
     }
     dict set response header content-length [expr {$end - $begin + 1}]
 
+    # Add connection: close if this is not a persistent connection.
+    if {!$persist} {
+        dict set response header connection close
+    }
+
     # Send the response header to the client.
-    chan puts $socket "HTTP/1.1 [dict get $response status]"
+    chan puts $socket "[dict get $request protocol] [dict get $response status]"
     chan puts $socket [enheader [dict get $response header]]\n
 
     # If requested, send the response content to the client.
@@ -1226,16 +1239,19 @@ proc ::wibble::panic {options port socket peerhost peerport request response} {
     if {![dict exists $response nonhttp] && $socket ne ""} {
         catch {
             chan configure $socket -translation crlf
-            chan puts $socket "HTTP/1.1 500 Internal Server Error"
-            chan puts $socket "Content-Type: text/plain;charset=utf-8"
-            chan puts $socket "Content-Length: [string length $message]"
-            chan puts $socket "Connection: close"
-            chan puts $socket ""
+            chan puts $socket\
+                "[dict get $request protocol] 500 Internal Server Error\
+                \ncontent-type: text/plain;charset=utf-8\
+                \ncontent-length: [string length $message]\
+                \nconnection: close\n"
             chan configure $socket -translation lf -encoding utf-8
             chan puts $socket $message
         }
     }
 }
+
+# Wibble has been loaded successfully.
+package provide wibble 0.4
 
 # =============================== example code ================================
 
