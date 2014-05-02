@@ -1,4 +1,4 @@
-#!/usr/bin/env tclsh
+/#!/usr/bin/env tclsh
 # Wibble - a pure-Tcl Web server.
 # Code: https://chiselapp.com/user/andy/repository/wibble/timeline
 # Discussion: http://wiki.tcl.tk/23626
@@ -1074,7 +1074,7 @@ proc ::wibble::getresponse {request} {
 proc ::wibble::defaultsend {socket request response} {
     # Determine if the connection is persistent.
     set persist [expr {
-        [dict get $request protocol] >= "http/1.1"
+        [dict get $request protocol] >= "HTTP/1.1"
      && ![string equal -nocase [dict getnull $request header connection] close]
     }]
 
