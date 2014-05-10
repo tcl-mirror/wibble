@@ -1,4 +1,4 @@
-/#!/usr/bin/env tclsh
+#!/usr/bin/env tclsh
 # Wibble - a pure-Tcl Web server.
 # Code: https://chiselapp.com/user/andy/repository/wibble/timeline
 # Discussion: http://wiki.tcl.tk/23626
