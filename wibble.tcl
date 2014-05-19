@@ -9,7 +9,7 @@ package require Tcl 8.6
 
 # Define the wibble namespace.
 namespace eval ::wibble {
-    variable zonehandlers
+    variable servers
 }
 
 # ============================== zone handlers ================================
@@ -21,8 +21,6 @@ namespace eval ::wibble::zone {
 
 # Echo request dictionary.
 proc ::wibble::zone::vars {state} {
-    dict set state response status 200
-    dict set state response header content-type "" text/html
     dict set state response content [template {
 <html><head><style type="text/css">
     body {font-family: monospace}
@@ -43,6 +41,8 @@ proc ::wibble::zone::vars {state} {
 %   }
 % }
 </table></body></html>}]
+    dict set state response status 200
+    dict set state response header content-type "" text/html
     sendresponse [dict get $state response]
 }
 
@@ -170,13 +170,13 @@ proc ::wibble::zone::notfound {state} {
 # ============================ utility procedures =============================
 
 # [dict getnull] is like [dict get] but returns empty string for missing keys.
-proc ::tcl::dict::getnull {dictionary args} {
-    if {[exists $dictionary {*}$args]} {
-        get $dictionary {*}$args
+proc ::wibble::dict_getnull {dictionary args} {
+    if {[dict exists $dictionary {*}$args]} {
+        dict get $dictionary {*}$args
     }
 }
 namespace ensemble configure dict -map [dict replace\
-    [namespace ensemble configure dict -map] getnull ::tcl::dict::getnull]
+    [namespace ensemble configure dict -map] getnull ::wibble::dict_getnull]
 
 # Expand a template.
 proc ::wibble::template {body} {
@@ -825,7 +825,7 @@ proc ::wibble::icc::get {fids filters {timeout ""}} {
 # that script.  Other events may be returned too, but only if they happened in
 # the same batch as an exception event.
 proc ::wibble::icc::catch {script} {
-    tailcall try $script on 7 events {set events} on ok "" {}
+    tailcall try $script on 7 events {set events} on ok {} {}
 }
 
 # Send event data to the named feeds, or all if "*".
@@ -839,7 +839,7 @@ proc ::wibble::icc::put {fids event args} {
 
     # Insist on running from the event loop, never from within a coroutine.
     if {[info coroutine] ne ""} {
-        after 0 [concat [list ::wibble::icc::put $fids $event] $args]
+        after 0 [info level 0]
         return
     }
 
@@ -887,14 +887,43 @@ proc ::wibble::sendresponse {response} {
     return -code 6 $response
 }
 
-# Register a zone handler.
-proc ::wibble::handle {prefix cmd args} {
-    variable zonehandlers
-    set name [namespace eval zone [list namespace which [lindex $cmd 0]]]
-    if {$name eq ""} {
-        error "invalid command name \"$cmd\""
+# Invoke a zone handler.  To be called from the configuration script.
+proc ::wibble::handle {prefix command args} {
+    upvar 1 system system
+
+    # Copy $prefix to $match and ensure $match has a slash at the end.
+    regsub {(^|[^/])$} $prefix &/ match
+
+    # Process the zone handler against every state in the system.
+    set i 0
+    foreach state $system {
+        set path [dict get $state request path]
+        if {$path eq $prefix
+         || [string equal -length [string length $match] $match $path]} {
+            # Replace the options in the state dict.
+            set suffix [string range $path [string length $prefix] end]
+            dict set state options $args
+            dict set state options prefix $prefix
+            dict set state options suffix $suffix
+            if {[dict exists $args root]} {
+                dict set state options fspath [dict get $args root]/$suffix
+            }
+
+            # Invoke the zone handler.  On [nexthandler], update system list.
+            try {
+                {*}$command $state
+            } on 5 outcome {
+                set system [lreplace $system $i $i {*}$outcome]
+            }
+            incr i
+        }
     }
-    lappend zonehandlers $prefix [concat [list $name] [lrange $cmd 1 end]] $args
+}
+
+# Intercept [sendresponse] within a script, overwriting the caller's response
+# variable.  Return true on intercept, false if [sendresponse] was not called.
+proc ::wibble::intercept {script {responsevar response}} {
+    tailcall try $script on 6 $responsevar {list 1} on ok {} {list 0}
 }
 
 # Add, modify, or cancel coroutine cleanup scripts.
@@ -1021,53 +1050,17 @@ proc ::wibble::getrequest {port chan peerhost peerport} {
     return $request
 }
 
-# Get a response from the zone handlers.
-proc ::wibble::getresponse {request} {
-    variable zonehandlers
-    set system [list [dict create options {} request $request response {}]]
+# Get a response from the zone handlers in the configuration.
+proc ::wibble::getresponse {handlers request} {
+    # Generate default response 501 as a fallback.
+    set response {status 501 header {content-type {"" text/plain}}
+        content unimplemented\n}
 
-    # Process all zone handlers.
-    foreach {prefix command options} $zonehandlers {
-        set match $prefix
-        if {[string index $match end] ne "/"} {
-            append match /
-        }
+    # Pass the initial system list to the configuration script.
+    intercept {{*}$handlers [list [dict create request $request response {}]]}
 
-        # Run the zone handler on all states with request paths inside the zone.
-        set i 0
-        foreach state $system {
-            set path [dict get $state request path]
-            if {$path eq $prefix
-             || [string equal -length [string length $match] $match $path]} {
-                set suffix [string range $path [string length $prefix] end]
-
-                # Replace the options in the state dict.
-                dict set state options $options
-                dict set state options prefix $prefix
-                dict set state options suffix $suffix
-                if {[dict exists $options root]} {
-                    dict set state options fspath\
-                        [dict get $options root]/$suffix
-                }
-
-                # Invoke the handler and process its outcome.
-                try {
-                    {*}$command $state
-                } on 5 outcome {
-                    # [nexthandler]: Update the system and continue processing.
-                    set system [lreplace $system $i $i {*}$outcome]
-                } on 6 outcome {
-                    # [sendresponse]: A response has been obtained.  Return it.
-                    return $outcome
-                }
-            }
-            incr i
-        }
-    }
-
-    # Return 501 as default response.
-    dict create status 501 header {content-type {"" text/plain charset utf-8}}\
-        content "not implemented: [dict get $request uri]\n"
+    # Return the response hopefully made by the script.
+    return $response
 }
 
 # Default send handler: send the response to the client using HTTP.
@@ -1114,7 +1107,7 @@ proc ::wibble::defaultsend {socket request response} {
     }
     dict set response header content-length [expr {$end - $begin + 1}]
 
-    # Add connection: close if this is not a persistent connection.
+    # Add "connection: close" if this is not a persistent connection.
     if {!$persist} {
         dict set response header connection close
     }
@@ -1155,20 +1148,26 @@ proc ::wibble::defaultsend {socket request response} {
 }
 
 # Main connection processing loop.
-proc ::wibble::process {port socket peerhost peerport} {
+proc ::wibble::process {port handlers socket peerhost peerport} {
     try {
         # Perform initial configuration.
-        set coro [info coroutine]
+        variable servers
+        dict lappend servers $port clients $socket
+        cleanup forget_client_socket [list apply {{socket} {
+            upvar 1 servers servers
+            dict set servers $socket clients [lsearch -not -exact -integer\
+                    [dict get $servers $socket clients] $socket]
+        }} $socket]
         cleanup close_client_socket [list chan close $socket]
-        cleanup unset_feed [list icc destroy $coro]
-        icc configure $coro accept readable copydone
+        cleanup unset_feed [list icc destroy ::wibble::$socket]
+        icc configure ::wibble::$socket accept readable copydone
         chan configure $socket -blocking 0
 
         # Main loop.
         while {1} {
             # Get request from client, then formulate a response to the reqeust.
             set request [getrequest $port $socket $peerhost $peerport]
-            set response [getresponse $request]
+            set response [getresponse $handlers $request]
 
             # Determine which command should be used to send the response.
             if {[dict exists $response sendcommand]} {
@@ -1182,7 +1181,6 @@ proc ::wibble::process {port socket peerhost peerport} {
                 catch {chan flush $socket}
                 unset request response
             } else {
-                chan close $socket
                 break
             }
         }
@@ -1203,10 +1201,49 @@ proc ::wibble::process {port socket peerhost peerport} {
 }
 
 # Listen for incoming connections.
-proc ::wibble::listen {port {socketcommand socket}} {
-    {*}$socketcommand -server [list apply {{port socket peerhost peerport} {
-        coroutine $socket ::wibble::process $port $socket $peerhost $peerport
-    } ::wibble} $port] $port
+proc ::wibble::listen {args} {
+    variable servers
+
+    # Bring dict-styled arguments into local variables.  Default socketcommand.
+    dict with args {}
+    if {![info exists socketcommand]} {
+        set socketcommand socket
+    }
+
+    # Generate the -server argument to [socket].  One argument to the server
+    # command is the handler lambda command which wraps the server script.
+    set command [list apply {{port handlers socket args} {
+        coroutine $socket ::wibble::process $port $handlers $socket {*}$args
+    } ::wibble} $port [list apply\
+        [list [concat [dict keys $args] system] $script ::wibble::zone]\
+        {*}[dict values $args]]]
+
+    # Start server socket.  On connection, run [process] in a coroutine.  Save
+    # the server socket name to the servers dictionary.
+    dict set servers $port server [{*}$socketcommand -server $command $port]
+    dict set servers $port clients {}
+}
+
+# Disconnect clients and stop listening for connections on selected ports.
+proc ::wibble::stop {{ports *}} {
+    variable servers
+    if {[info exists servers]} {
+        # By default, make a list of all ports.
+        if {$ports eq "*"} {
+            set ports [dict keys $servers]
+        }
+
+        # Close server and all clients on each selected port.
+        foreach port $ports {
+            if {[dict exists $servers $port]} {
+                chan close [dict get $servers $port server]
+                foreach socket [dict get $servers $port clients] {
+                    catch {chan close $socket}
+                }
+                dict unset servers $port
+            }
+        }
+    }
 }
 
 # ========================= customizable procedures ===========================
@@ -1263,12 +1300,15 @@ if {$argv0 eq [info script]} {
         set root [file join $root docroot]
     }
 
-    # Define zone handlers.
-    set ::wibble::zonehandlers {}
-    ::wibble::handle /vars vars
-    ::wibble::handle / dirslash root $root
-    ::wibble::handle / indexfile root $root indexfile index.html
-    ::wibble::handle / contenttype typetable {
+    # Stop any existing server sockets and clients.
+    ::wibble::stop
+
+    # Start a server.
+    ::wibble::listen port 8080 script {
+        handle /vars zone::vars
+        handle / zone::dirslash root $root
+        handle / zone::indexfile root $root indexfile index.html
+        handle / zone::contenttype typetable {
 application/javascript  ^js$                  application/json  ^json$
 application/pdf ^pdf$                         audio/mid      ^(?:midi?|rmi)$
 audio/mp4       ^m4a$                         audio/mpeg     ^mp3$
@@ -1281,16 +1321,17 @@ text/html       ^html?$                       text/plain     ^txt$
 text/xml        ^xml$                         video/mp4      ^(?:mp4|m4[bprv])$
 video/mpeg      ^(?:m[lp]v|mp[eg]|mpeg|vob)$  video/ogg      ^og[vx]$
 video/quicktime ^(?:mov|qt)$                  video/x-ms-wmv ^wmv$
-    }
-    ::wibble::handle / staticfile root $root
-    ::wibble::handle / scriptfile root $root
-    ::wibble::handle / templatefile root $root
-    ::wibble::handle / dirlist root $root
-    ::wibble::handle / notfound
+        }
+        handle / zone::staticfile root $root
+        handle / zone::scriptfile root $root
+        handle / zone::templatefile root $root
+        handle / zone::dirlist root $root
+        handle / zone::notfound
+    } root $root
 
-    # Start a server, enter the event loop, and provide a console if needed.
-    if {[catch {::wibble::listen 8080}]} {
-        # If Wibble is already loaded, do nothing.
+    # Enter the event loop and/or provide a console.
+    if {[info exists wibble_demo]} {
+        # Do nothing if the event loop and/or console are already running.
     } elseif {[catch {package present Tk}]} {
         # If there's no Tk, provide no interface, and only enter the event loop.
         vwait forever
@@ -1328,6 +1369,7 @@ video/quicktime ^(?:mov|qt)$                  video/x-ms-wmv ^wmv$
         }
         focus .e
     }
+    set wibble_demo 1
 }
 
 # vim: set sts=4 sw=4 tw=80 et ft=tcl:
