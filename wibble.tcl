@@ -923,7 +923,7 @@ proc ::wibble::handle {prefix command args} {
 # Intercept [sendresponse] within a script, overwriting the caller's response
 # variable.  Return true on intercept, false if [sendresponse] was not called.
 proc ::wibble::intercept {script {responsevar response}} {
-    tailcall try $script on 6 $responsevar {list 1} on ok {} {list 0}
+    tailcall try $script on 6 $responsevar {expr 1} on ok {} {expr 0}
 }
 
 # Add, modify, or cancel coroutine cleanup scripts.
